@@ -1,0 +1,79 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: pypi-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check and build distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev --locked
+
+      - name: Verify release tag
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(uv run python -c 'from agent_sandbox_backends import __version__; print(__version__)')"
+          if [ "v${PACKAGE_VERSION}" != "${{ github.event.release.tag_name }}" ]; then
+            echo "Release tag must be v${PACKAGE_VERSION}, got ${{ github.event.release.tag_name }}"
+            exit 1
+          fi
+
+      - name: Run quality checks
+        run: |
+          uv run ruff check .
+          uv run pyright
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agent-sandbox-backends/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
